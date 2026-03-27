@@ -6,44 +6,59 @@ const app = new Hono()
 
 app.use('/api/*', cors())
 
-// API: 都道府県一覧
+// ── セキュリティ共通ヘルパー ──────────────────────────────
+/** クエリ文字列を安全に取得（長さ制限・制御文字除去） */
+function safeQuery(raw: string | undefined, maxLen = 50): string {
+  if (!raw) return ''
+  // 制御文字・nullバイトを除去し、最大文字数を制限
+  return raw.replace(/[\x00-\x1F\x7F]/g, '').slice(0, maxLen).trim()
+}
+
+// ── API ──────────────────────────────────────────────────
+
+// 都道府県一覧
 app.get('/api/prefectures', (c) => {
   return c.json({ prefectures })
 })
 
-// API: 都道府県から市区町村一覧
+// 都道府県 → 市区町村一覧
 app.get('/api/municipalities', (c) => {
-  const prefecture = c.req.query('prefecture')
+  const prefecture = safeQuery(c.req.query('prefecture'), 10)
   if (!prefecture) return c.json({ error: '都道府県を指定してください' }, 400)
+  // 存在しない都道府県への問い合わせは空配列を返す（情報漏洩しない）
+  if (!prefectures.includes(prefecture)) return c.json({ municipalities: [] })
   const municipalities = getMunicipalitiesByPrefecture(prefecture)
   return c.json({ municipalities })
 })
 
-// API: テキスト検索
+// テキスト検索（部分一致）
 app.get('/api/search', (c) => {
-  const q = c.req.query('q') || ''
+  const q = safeQuery(c.req.query('q'), 50)
+  if (!q) return c.json({ results: [] })
   const results = searchByMunicipality(q)
   return c.json({ results })
 })
 
-// API: 都道府県+市区町村から電話番号
+// 都道府県 + 市区町村 → 電話番号
 app.get('/api/phone', (c) => {
-  const prefecture = c.req.query('prefecture')
-  const municipality = c.req.query('municipality')
+  const prefecture = safeQuery(c.req.query('prefecture'), 10)
+  const municipality = safeQuery(c.req.query('municipality'), 50)
   if (!prefecture || !municipality) {
     return c.json({ error: '都道府県と市区町村を指定してください' }, 400)
+  }
+  // 都道府県が存在しない場合は即 not found（列挙攻撃対策）
+  if (!prefectures.includes(prefecture)) {
+    return c.json({ found: false })
   }
   const entry = phoneData.find(e =>
     e.prefecture === prefecture &&
     e.municipalities.some(m => m === municipality || m.includes(municipality) || municipality.includes(m))
   )
-  if (!entry) {
-    return c.json({ found: false, message: '該当する連絡先が見つかりませんでした' })
-  }
+  if (!entry) return c.json({ found: false })
   return c.json({ found: true, entry })
 })
 
-// メインページ
+// ── メインページ ──────────────────────────────────────────
 app.get('/', (c) => {
   const html = `<!DOCTYPE html>
 <html lang="ja">
@@ -51,6 +66,9 @@ app.get('/', (c) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>アスベスト110番</title>
+  <!-- CSP: インラインスクリプトはnonce不要のため unsafe-inline を最小限許可 -->
+  <!-- 外部リソースは信頼できるCDNのみ許可 -->
+  <meta http-equiv="X-Content-Type-Options" content="nosniff">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <style>
@@ -60,11 +78,12 @@ app.get('/', (c) => {
     .result-card { background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); }
     .header-gradient { background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); }
     .section-card { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-    .highlight { background: linear-gradient(120deg, #fef3c7 0%, #fde68a 100%); }
     input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
     .phone-number { font-size: 2rem; font-weight: 800; color: #1d4ed8; letter-spacing: 0.05em; }
     .suggest-item:hover { background: #eff6ff; }
     .no-result { background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%); }
+    #suggestions { position: absolute; width: 100%; z-index: 50; }
+    .search-wrap { position: relative; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -106,7 +125,7 @@ app.get('/', (c) => {
           相談窓口を検索
         </h2>
       </div>
-      
+
       <div class="p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
         <!-- 左：テキスト検索 -->
         <div>
@@ -115,28 +134,30 @@ app.get('/', (c) => {
             簡単検索
           </p>
           <p class="text-xs text-gray-400 mb-2">市区町村名を入力</p>
-          <div class="relative">
-            <div class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+          <div class="search-wrap">
+            <div class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" style="top:18px">
               <i class="fas fa-map-marker-alt"></i>
             </div>
             <input
               type="text"
               id="textSearch"
               placeholder="例：本庄、渋谷、横浜"
-              class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm transition-all duration-200"
+              maxlength="50"
               autocomplete="off"
+              spellcheck="false"
+              class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm transition-all duration-200"
             >
+            <div id="suggestions" class="hidden border border-gray-200 rounded-lg overflow-hidden bg-white shadow-md mt-1"></div>
           </div>
-          <div id="suggestions" class="mt-1 border border-gray-200 rounded-lg overflow-hidden hidden bg-white shadow-md z-10"></div>
           <p class="text-xs text-gray-400 mt-1.5 flex items-center gap-1">
             <i class="fas fa-lightbulb text-yellow-400"></i>
             入力すると候補が表示されます
           </p>
         </div>
 
-        <!-- 区切り線（縦） -->
-        <div class="hidden md:flex items-stretch">
-          <div class="w-px bg-gray-200 mx-auto"></div>
+        <!-- 区切り（縦） -->
+        <div class="hidden md:block">
+          <div class="w-px bg-gray-200 h-full mx-auto"></div>
         </div>
         <div class="md:hidden border-t border-gray-100"></div>
 
@@ -147,18 +168,14 @@ app.get('/', (c) => {
             プルダウン選択
           </p>
           <p class="text-xs text-gray-400 mb-2">都道府県を選択</p>
-          <select
-            id="prefectureSelect"
-            class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-all duration-200 mb-3"
-          >
+          <select id="prefectureSelect"
+            class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-all duration-200 mb-3">
             <option value="">都道府県を選択してください</option>
           </select>
           <p class="text-xs text-gray-400 mb-2">市区町村を選択</p>
-          <select
-            id="municipalitySelect"
+          <select id="municipalitySelect"
             class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white transition-all duration-200"
-            disabled
-          >
+            disabled>
             <option value="">まず都道府県を選択</option>
           </select>
         </div>
@@ -210,119 +227,152 @@ app.get('/', (c) => {
   </footer>
 
 <script>
-const API_BASE = '';
+'use strict';
 
-// 都道府県リスト読み込み
-async function loadPrefectures() {
-  const res = await fetch(API_BASE + '/api/prefectures');
-  const data = await res.json();
-  const sel = document.getElementById('prefectureSelect');
-  data.prefectures.forEach(pref => {
-    const opt = document.createElement('option');
-    opt.value = pref;
-    opt.textContent = pref;
-    sel.appendChild(opt);
+// ── XSS対策: テキストノードのみ使う安全なDOM操作ヘルパー ──
+function txt(str) {
+  return document.createTextNode(String(str));
+}
+function el(tag, attrs, ...children) {
+  const e = document.createElement(tag);
+  if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+    if (k === 'class') e.className = v;
+    else if (k === 'style') e.style.cssText = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
   });
+  children.forEach(c => {
+    if (c == null) return;
+    e.appendChild(typeof c === 'string' ? txt(c) : c);
+  });
+  return e;
 }
 
-// 都道府県選択時に市区町村を読み込む
+// ── 入力サニタイズ（クライアント側、念のため） ──
+function sanitizeInput(str, maxLen = 50) {
+  return String(str).replace(/[\\x00-\\x1F\\x7F]/g, '').slice(0, maxLen);
+}
+
+// ── 都道府県リスト読み込み ──
+async function loadPrefectures() {
+  try {
+    const res = await fetch('/api/prefectures');
+    if (!res.ok) return;
+    const data = await res.json();
+    const sel = document.getElementById('prefectureSelect');
+    data.prefectures.forEach(pref => {
+      sel.appendChild(el('option', { value: pref }, pref));
+    });
+  } catch(e) { /* ネットワークエラーは無視 */ }
+}
+
+// ── 都道府県選択 → 市区町村リスト ──
 document.getElementById('prefectureSelect').addEventListener('change', async function() {
   const pref = this.value;
   const munSel = document.getElementById('municipalitySelect');
-  munSel.innerHTML = '<option value="">市区町村を選択してください</option>';
+  munSel.innerHTML = '';
+  munSel.appendChild(el('option', { value: '' }, '市区町村を選択してください'));
   munSel.disabled = !pref;
   hideResult();
   if (!pref) return;
-
-  const res = await fetch(API_BASE + '/api/municipalities?prefecture=' + encodeURIComponent(pref));
-  const data = await res.json();
-  data.municipalities.forEach(m => {
-    const opt = document.createElement('option');
-    opt.value = m;
-    opt.textContent = m;
-    munSel.appendChild(opt);
-  });
+  try {
+    const res = await fetch('/api/municipalities?prefecture=' + encodeURIComponent(pref));
+    if (!res.ok) return;
+    const data = await res.json();
+    data.municipalities.forEach(m => {
+      munSel.appendChild(el('option', { value: m }, m));
+    });
+  } catch(e) {}
 });
 
-// 市区町村選択時に電話番号を検索
+// ── 市区町村選択 → 電話番号 ──
 document.getElementById('municipalitySelect').addEventListener('change', async function() {
   const municipality = this.value;
   const prefecture = document.getElementById('prefectureSelect').value;
   if (!municipality || !prefecture) { hideResult(); return; }
-
-  const res = await fetch(API_BASE + '/api/phone?prefecture=' + encodeURIComponent(prefecture) + '&municipality=' + encodeURIComponent(municipality));
-  const data = await res.json();
-  showResult(data, municipality, prefecture);
+  try {
+    const res = await fetch('/api/phone?prefecture=' + encodeURIComponent(prefecture) + '&municipality=' + encodeURIComponent(municipality));
+    if (!res.ok) return;
+    const data = await res.json();
+    showResult(data, municipality, prefecture);
+  } catch(e) {}
 });
 
-// テキスト検索
+// ── テキスト検索 ──
 let searchTimer = null;
-let currentSuggestions = [];
 
 document.getElementById('textSearch').addEventListener('input', function() {
-  const q = this.value.trim();
+  const q = sanitizeInput(this.value.trim());
   clearTimeout(searchTimer);
-  if (!q) {
-    hideSuggestions();
-    hideResult();
-    return;
-  }
+  if (!q) { hideSuggestions(); hideResult(); return; }
   searchTimer = setTimeout(() => doTextSearch(q), 250);
 });
 
 document.getElementById('textSearch').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') {
-    const q = this.value.trim();
+    clearTimeout(searchTimer);
+    const q = sanitizeInput(this.value.trim());
     if (q) doTextSearch(q, true);
   }
+  // ESCでサジェストを閉じる
+  if (e.key === 'Escape') hideSuggestions();
 });
 
 async function doTextSearch(q, forceShow = false) {
-  const res = await fetch(API_BASE + '/api/search?q=' + encodeURIComponent(q));
-  const data = await res.json();
-  
-  if (data.results.length === 0) {
-    hideSuggestions();
-    if (forceShow) showNoResult(q);
-    return;
-  }
-  
-  // サジェスト表示
-  showSuggestions(data.results, q);
-  
-  // 完全一致または1件のみの場合は自動で結果表示
-  if (data.results.length === 1) {
-    hideSuggestions();
-    const entry = data.results[0];
-    showResult({ found: true, entry }, q, entry.prefecture);
-  }
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (!data.results || data.results.length === 0) {
+      hideSuggestions();
+      if (forceShow) showNoResult(q);
+      return;
+    }
+
+    // 1件かつ完全一致 → そのまま結果表示
+    if (data.results.length === 1) {
+      const entry = data.results[0];
+      const exactMatch = entry.municipalities.some(m => m === q);
+      hideSuggestions();
+      showResult({ found: true, entry }, q, entry.prefecture);
+      return;
+    }
+
+    showSuggestions(data.results, q);
+  } catch(e) {}
 }
 
+// ── サジェスト表示（DOM操作のみ・XSS安全） ──
 function showSuggestions(results, q) {
   const box = document.getElementById('suggestions');
   box.innerHTML = '';
-  // 最大10件のユニークな結果を表示
+
+  // 候補をフラットに展開：入力文字列を含む市区町村を優先的に収集
   const shown = [];
-  results.forEach(entry => {
-    entry.municipalities
-      .filter(m => m.includes(q) || q.includes(m))
-      .forEach(m => {
-        if (shown.length < 10 && !shown.find(s => s.text === m + '（' + entry.prefecture + '）')) {
-          shown.push({ text: m + '（' + entry.prefecture + '）', entry, m });
-        }
-      });
-    if (shown.length === 0) {
-      // 部分マッチが無い場合はエントリ自体を表示
-      if (shown.length < 10) {
-        shown.push({ text: entry.municipalities[0] + '（' + entry.prefecture + '）', entry, m: entry.municipalities[0] });
+  for (const entry of results) {
+    // まず入力を含む市区町村を探す
+    const matched = entry.municipalities.filter(m => m.includes(q));
+    const targets = matched.length > 0 ? matched : [entry.municipalities[0]];
+    for (const m of targets) {
+      if (shown.length >= 10) break;
+      const label = m + '（' + entry.prefecture + '）';
+      if (!shown.some(s => s.label === label)) {
+        shown.push({ label, m, entry });
       }
     }
-  });
-  
+    if (shown.length >= 10) break;
+  }
+
+  if (shown.length === 0) { box.classList.add('hidden'); return; }
+
   shown.forEach(item => {
-    const div = document.createElement('div');
-    div.className = 'suggest-item px-4 py-2.5 text-sm text-gray-700 cursor-pointer border-b border-gray-100 last:border-0 flex items-center gap-2';
-    div.innerHTML = '<i class="fas fa-map-pin text-blue-400 text-xs"></i>' + escHtml(item.text);
+    const icon = el('i', { class: 'fas fa-map-pin text-blue-400 text-xs mr-2' });
+    const div = el('div',
+      { class: 'suggest-item px-4 py-2.5 text-sm text-gray-700 cursor-pointer border-b border-gray-100 flex items-center' },
+      icon,
+      item.label  // textNode として安全に挿入
+    );
     div.addEventListener('click', () => {
       document.getElementById('textSearch').value = item.m;
       hideSuggestions();
@@ -330,7 +380,7 @@ function showSuggestions(results, q) {
     });
     box.appendChild(div);
   });
-  
+
   box.classList.remove('hidden');
 }
 
@@ -344,96 +394,85 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// ── 結果表示（DOM操作のみ・XSS安全） ──
 function showResult(data, query, prefecture) {
   const area = document.getElementById('resultArea');
   area.classList.remove('hidden');
-  
+  area.innerHTML = '';
+
   if (!data.found) {
-    area.innerHTML = \`
-      <div class="no-result rounded-xl p-5 section-card fade-in">
-        <div class="flex items-center gap-3">
-          <div class="bg-orange-100 rounded-full p-3">
-            <i class="fas fa-search text-orange-500 text-xl"></i>
-          </div>
-          <div>
-            <p class="font-bold text-orange-800 text-base">「\${escHtml(query)}」の相談窓口が見つかりませんでした</p>
-            <p class="text-sm text-orange-600 mt-1">別の市区町村名でお試しいただくか、都道府県プルダウンからお探しください。</p>
-          </div>
-        </div>
-      </div>
-    \`;
+    const card = el('div', { class: 'no-result rounded-xl p-5 section-card fade-in' },
+      el('div', { class: 'flex items-center gap-3' },
+        el('div', { class: 'bg-orange-100 rounded-full p-3' },
+          el('i', { class: 'fas fa-search text-orange-500 text-xl' })
+        ),
+        el('div', null,
+          el('p', { class: 'font-bold text-orange-800 text-base' }, '「' + query + '」の相談窓口が見つかりませんでした'),
+          el('p', { class: 'text-sm text-orange-600 mt-1' }, '別の市区町村名でお試しいただくか、都道府県プルダウンからお探しください。')
+        )
+      )
+    );
+    area.appendChild(card);
     return;
   }
-  
+
   const entry = data.entry;
-  const phoneDisplay = entry.phone || '電話番号が登録されていません';
   const coverArea = entry.municipalities.join('、');
-  
-  area.innerHTML = \`
-    <div class="result-card rounded-xl p-5 section-card fade-in border border-blue-200">
-      <div class="flex items-center gap-2 mb-4">
-        <div class="bg-blue-500 rounded-full p-2">
-          <i class="fas fa-phone-alt text-white text-lg"></i>
-        </div>
-        <div>
-          <p class="text-xs text-blue-500 font-semibold uppercase tracking-wide">相談窓口が見つかりました</p>
-          <h3 class="text-lg font-bold text-gray-800">\${escHtml(entry.prefecture)} アスベスト相談窓口</h3>
-        </div>
-      </div>
-      
-      <div class="bg-white rounded-xl p-5 mb-4 text-center shadow-sm border border-blue-100">
-        <p class="text-xs text-gray-500 mb-1 uppercase tracking-wide">お電話番号</p>
-        \${entry.phone
-          ? \`<a href="tel:\${entry.phone.replace(/-/g, '')}" class="phone-number block hover:text-blue-900 transition-colors">
-              <i class="fas fa-phone-alt mr-2 text-2xl"></i>\${escHtml(entry.phone)}
-            </a>
-            <p class="text-xs text-gray-400 mt-2">番号をタップすると電話をかけられます</p>\`
-          : \`<p class="text-lg font-bold text-gray-400 mt-2">電話番号が登録されていません</p>
-             <p class="text-xs text-gray-400 mt-1">各都道府県の担当窓口にお問い合わせください</p>\`
-        }
-      </div>
-      
-      <div class="bg-blue-50 rounded-lg p-3">
-        <p class="text-xs text-blue-600 font-semibold mb-1 flex items-center gap-1">
-          <i class="fas fa-map text-blue-400"></i>
-          この番号が担当する地域
-        </p>
-        <p class="text-sm text-gray-700">\${escHtml(coverArea)}</p>
-      </div>
-    </div>
-  \`;
+
+  // 電話番号部分
+  let phoneNode;
+  if (entry.phone) {
+    // tel: リンクは href属性に電話番号のみ（数字とハイフン）を使用
+    const cleanPhone = entry.phone.replace(/[^0-9\\-]/g, '');
+    const link = el('a',
+      { class: 'phone-number block hover:text-blue-900 transition-colors', href: 'tel:' + cleanPhone },
+      el('i', { class: 'fas fa-phone-alt mr-2 text-2xl' }),
+      entry.phone
+    );
+    phoneNode = el('div', null,
+      link,
+      el('p', { class: 'text-xs text-gray-400 mt-2' }, '番号をタップすると電話をかけられます')
+    );
+  } else {
+    phoneNode = el('div', null,
+      el('p', { class: 'text-lg font-bold text-gray-400 mt-2' }, '電話番号が登録されていません'),
+      el('p', { class: 'text-xs text-gray-400 mt-1' }, '各都道府県の担当窓口にお問い合わせください')
+    );
+  }
+
+  const card = el('div', { class: 'result-card rounded-xl p-5 section-card fade-in border border-blue-200' },
+    el('div', { class: 'flex items-center gap-2 mb-4' },
+      el('div', { class: 'bg-blue-500 rounded-full p-2' },
+        el('i', { class: 'fas fa-phone-alt text-white text-lg' })
+      ),
+      el('div', null,
+        el('p', { class: 'text-xs text-blue-500 font-semibold uppercase tracking-wide' }, '相談窓口が見つかりました'),
+        el('h3', { class: 'text-lg font-bold text-gray-800' }, entry.prefecture + ' アスベスト相談窓口')
+      )
+    ),
+    el('div', { class: 'bg-white rounded-xl p-5 mb-4 text-center shadow-sm border border-blue-100' },
+      el('p', { class: 'text-xs text-gray-500 mb-1 uppercase tracking-wide' }, 'お電話番号'),
+      phoneNode
+    ),
+    el('div', { class: 'bg-blue-50 rounded-lg p-3' },
+      el('p', { class: 'text-xs text-blue-600 font-semibold mb-1 flex items-center gap-1' },
+        el('i', { class: 'fas fa-map text-blue-400' }),
+        ' この番号が担当する地域'
+      ),
+      el('p', { class: 'text-sm text-gray-700' }, coverArea)
+    )
+  );
+  area.appendChild(card);
 }
 
 function showNoResult(query) {
-  const area = document.getElementById('resultArea');
-  area.classList.remove('hidden');
-  area.innerHTML = \`
-    <div class="no-result rounded-xl p-5 section-card fade-in">
-      <div class="flex items-center gap-3">
-        <div class="bg-orange-100 rounded-full p-3">
-          <i class="fas fa-search text-orange-500 text-xl"></i>
-        </div>
-        <div>
-          <p class="font-bold text-orange-800 text-base">「\${escHtml(query)}」の相談窓口が見つかりませんでした</p>
-          <p class="text-sm text-orange-600 mt-1">別の市区町村名でお試しいただくか、都道府県プルダウンからお探しください。</p>
-        </div>
-      </div>
-    </div>
-  \`;
+  showResult({ found: false }, query, '');
 }
 
 function hideResult() {
   const area = document.getElementById('resultArea');
   area.classList.add('hidden');
   area.innerHTML = '';
-}
-
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 // 初期化
