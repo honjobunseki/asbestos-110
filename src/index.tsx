@@ -126,9 +126,9 @@ app.get('/', (c) => {
         </h2>
       </div>
 
-      <div class="p-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="p-5 flex flex-col md:flex-row gap-6">
         <!-- 左：テキスト検索 -->
-        <div>
+        <div class="flex-1 min-w-0">
           <p class="text-sm font-semibold text-gray-600 mb-1 flex items-center gap-1">
             <i class="fas fa-keyboard text-blue-400 text-xs"></i>
             簡単検索
@@ -155,14 +155,12 @@ app.get('/', (c) => {
           </p>
         </div>
 
-        <!-- 区切り（縦） -->
-        <div class="hidden md:block">
-          <div class="w-px bg-gray-200 h-full mx-auto"></div>
-        </div>
+        <!-- 区切り線 -->
+        <div class="hidden md:block w-px bg-gray-200 self-stretch"></div>
         <div class="md:hidden border-t border-gray-100"></div>
 
         <!-- 右：プルダウン選択 -->
-        <div class="md:-ml-6">
+        <div class="flex-1 min-w-0">
           <p class="text-sm font-semibold text-gray-600 mb-1 flex items-center gap-1">
             <i class="fas fa-list text-green-500 text-xs"></i>
             プルダウン選択
