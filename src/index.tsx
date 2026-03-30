@@ -141,7 +141,7 @@ app.get('/', (c) => {
             <input
               type="text"
               id="textSearch"
-              placeholder="例：本庄、渋谷、横浜"
+              placeholder="例：渋谷、横浜、札幌"
               maxlength="50"
               autocomplete="off"
               spellcheck="false"
