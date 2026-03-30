@@ -65,7 +65,7 @@ app.get('/', (c) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>アスベスト110番</title>
+  <title>アスベストお問い合わせ窓口</title>
   <!-- CSP: インラインスクリプトはnonce不要のため unsafe-inline を最小限許可 -->
   <!-- 外部リソースは信頼できるCDNのみ許可 -->
   <meta http-equiv="X-Content-Type-Options" content="nosniff">
@@ -96,7 +96,7 @@ app.get('/', (c) => {
           <i class="fas fa-exclamation-triangle text-white text-xl"></i>
         </div>
         <div>
-          <h1 class="text-2xl font-bold tracking-wide">アスベスト110番</h1>
+          <h1 class="text-2xl font-bold tracking-wide">アスベストお問い合わせ窓口</h1>
           <p class="text-blue-200 text-sm mt-0.5">お住まいの地域のアスベスト相談窓口をご案内します</p>
         </div>
       </div>
@@ -220,7 +220,7 @@ app.get('/', (c) => {
   </main>
 
   <footer class="bg-gray-800 text-gray-400 text-xs text-center py-4 mt-8">
-    <p>アスベスト110番 | 全国アスベスト相談窓口案内サービス</p>
+    <p>アスベストお問い合わせ窓口 | 全国アスベスト相談窓口案内サービス</p>
   </footer>
 
 <script>
